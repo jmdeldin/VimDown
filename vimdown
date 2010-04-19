@@ -1,0 +1,156 @@
+#!/usr/bin/env python
+
+"""
+VimDown, a package manager for Vim.
+
+:Author:   Jon-Michael Deldin
+:Contact:  dev@jmdeldin.com
+:Homepage: http://github.com/jmdeldin/VimDown
+"""
+
+import optparse
+import sys
+import csv
+import os
+import shutil
+import urllib2
+import re
+
+def update_vim_scripts(scripts, bundle_dir):
+    """Downloads and unpacks Vim scripts
+
+    Keyword Arguments:
+    scripts    -- list of dictionaries ([{"ScriptId": ..., "Name": ...", "Directory": ...}])
+    bundle_dir -- bundle directory (absolute path)
+
+    """
+    # pattern for finding the first script to download
+    href_re     = re.compile(r"(download_script.php\?src_id=\d+)", re.MULTILINE)
+
+    # pattern for extracting the filename from download_script.php's headers,
+    # EX: Content-Disposition: attachment; filename=mayansmoke.vim
+    filename_re = re.compile(r"filename=(.*)")
+
+    # base Vim URL
+    base_url = "http://www.vim.org/scripts"
+
+    # TODO: refactor this sloppy mess
+    for script in scripts:
+        # the script's HTML homepage
+        url = "%s/script.php?script_id=%s" % (base_url, script["ScriptId"])
+        html = urllib2.urlopen(url).read()
+
+        # grab the latest download link
+        href = href_re.search(html).groups()[0]
+
+        print("Downloading: <%s/%s>" % (base_url, href))
+        dl_file = urllib2.urlopen("http://www.vim.org/scripts/%s" % (href));
+
+        # get the downloaded filename from the header, otherwise we'd just
+        # save "download_script.php?id=xxx"
+        header   = dl_file.headers.getheader("Content-Disposition")
+        filename = filename_re.search(header).groups()[0]
+
+        # directory to save to
+        dir = "%s/%s" % (bundle_dir, script["Name"])
+        # remove the existing directory
+        if os.path.exists(dir):
+            print('Removing "%s"' % dir)
+            shutil.rmtree(dir)
+        # create the new script dir
+        print('Creating "%s"' % dir)
+        os.mkdir(dir)
+        os.chdir(dir)
+
+        # handle scripts that require an additional directory (e.g.,
+        # colorschemes, single .vim files)
+        if script["Directory"] != "":
+            dir = "%s/%s" % (dir, script["Directory"])
+            os.mkdir(dir)
+            os.chdir(dir)
+
+        # save the file
+        print('Saving %s to "%s/%s' % (script["Name"], dir, filename))
+        local_file = open(filename, "w")
+        local_file.write(dl_file.read())
+        local_file.close()
+
+        # but we're not done yet! we need to deal with Vimballs, zips, and
+        # tarballs
+        ext = os.path.splitext(filename)
+
+        # Vimballs come in gzipped or raw VBA forms
+        if filename.rstrip(".gz").find("vba") != -1:
+            print("Unpacking Vimball")
+            # override Vimball save directory
+            vim_cmd = ":let g:vimball_home = '" + os.getcwd() + "'| :so %| :q"
+            if os.system('vim %s -c "%s"' % (filename, vim_cmd)) == 0:
+                print('Successfully unpacked "%s"' % filename)
+            else:
+                print('ERR: Unable to unpack "%s"' % filename)
+        # ZIP files are a bigger pain...
+        elif ext[1].find("zip") != -1:
+            if os.system("unzip %s" % filename) == 0:
+                # try to handle versioned zips
+                extracted = ext[0] # saved filename
+                if extracted.find('-') != -1:
+                    extracted = extracted[:extracted.find('-')]
+                    if os.path.exists(extracted):
+                        print('Moving files from "%s" up' % extracted)
+                        os.system("mv -v %s/* ./" % extracted)
+                        print('Removing "%s"' % extracted)
+                        os.rmdir(extracted)
+            else:
+                print('ERR: Unable to unzip "%s"' % filename)
+        # tarballs
+        elif ext[1].find("tar") != -1 or ext[1].find("gz") != -1 or ext[1].find("tgz") != -1:
+            if os.system("tar -xzvf %s" % filename) == 0:
+                print('Successfully untarred "%s"' % filename)
+            else:
+                print('ERR: Unable to untar "%s"' % filename)
+        # separate each script
+        print("%s" % "-" * 80)
+
+    # change back to the main bundle directory
+    os.chdir(bundle_dir)
+
+def main():
+    parser = optparse.OptionParser()
+    vim_dir = os.environ['HOME'] + "/" + ".vim/"
+    parser.add_option("-f", "--file", dest="filename",
+                      default=vim_dir + "bundles.csv", help="Bundle CSV file")
+    parser.add_option("-d", "--directory", dest="bundle_dir",
+                      default=vim_dir + "bundle",
+                      help="Bundle directory (e.g., ~/.vim/bundle)")
+    (options, args) = parser.parse_args()
+
+    filename   = options.filename
+    bundle_dir = os.path.abspath(options.bundle_dir)
+
+    # check for the CSV
+    try:
+        fsock = open(filename)
+    except IOError as e:
+        print(e)
+        sys.exit(1)
+
+    try:
+        os.chdir(bundle_dir)
+    except OSError as e:
+        print(e)
+        sys.exit(1)
+
+    # read the CSV file into a dictionary
+    db = csv.DictReader(fsock, skipinitialspace=True)
+
+    # copy the CSV file into a list
+    scripts = []
+    for row in db:
+        scripts.append(row)
+    fsock.close()
+
+    update_vim_scripts(scripts, bundle_dir)
+
+if __name__ == "__main__":
+    main()
+
